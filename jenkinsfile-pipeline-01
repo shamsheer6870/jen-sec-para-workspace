@@ -1,0 +1,79 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ENV', choices: ['dev', 'test', 'prod'], description: 'Select Environment')
+        choice(name: 'ACTION', choices: ['apply', 'destroy'], description: 'Terraform Action')
+    }
+
+    environment {
+        AWS_DEFAULT_REGION = 'ap-south-1'
+        SECRET_NAME = 'jenkins-demo-secret-manager'
+        TF_IN_AUTOMATION = "true"
+    }
+
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                deleteDir()
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                echo "Cloning repository..."
+                git branch: 'main', url: 'https://github.com/shamsheer6870/jen-sec-para-workspace.git'
+            }
+        }
+
+        stage('Fetch AWS Credentials') {
+            steps {
+                script {
+                    echo "Fetching AWS credentials via CLI..."
+                    def secret = sh(
+                        script: """
+                        aws secretsmanager get-secret-value \
+                        --secret-id ${SECRET_NAME} \
+                        --region ${AWS_DEFAULT_REGION} \
+                        --query SecretString \
+                        --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def json = readJSON text: secret
+                    env.AWS_ACCESS_KEY_ID = json.access_key
+                    env.AWS_SECRET_ACCESS_KEY = json.secret_key
+                }
+            }
+        }
+
+        stage('Terraform Init & Workspace Setup') {
+            steps {
+                sh '''
+                terraform init -no-color
+                terraform workspace select ${ENV} || terraform workspace new ${ENV}
+                '''
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                sh 'terraform plan -var-file="${ENV}.tfvars" -no-color'
+            }
+        }
+
+        stage('Terraform Execution') {
+            steps {
+                script {
+                    if (params.ACTION == 'apply') {
+                        sh 'terraform apply -auto-approve -var-file="${ENV}.tfvars" -no-color'
+                    } else if (params.ACTION == 'destroy') {
+                        input message: "⚠️ DANGER: Confirm DESTROY for ${params.ENV}?"
+                        sh 'terraform destroy -auto-approve -var-file="${ENV}.tfvars" -no-color'
+                    }
+                }
+            }
+        }
+    }
+}
