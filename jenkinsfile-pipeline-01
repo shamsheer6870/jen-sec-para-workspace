@@ -9,7 +9,7 @@ pipeline {
     environment {
         AWS_DEFAULT_REGION = 'ap-south-1'
         SECRET_NAME = 'jenkins-demo-secret-manager'
-        TF_IN_AUTOMATION = "true"
+        TF_IN_AUTOMATION = 'true'
     }
 
     stages {
@@ -22,7 +22,7 @@ pipeline {
         stage('Checkout Code') {
             steps {
                 echo "Cloning repository..."
-                git branch: 'main', url: 'https://github.com/shamsheer6870/jen-sec-para-workspace.git'
+                git branch: 'main', url: 'https://github.com/shamsheer6870/jenkins-secrect-mana-multi-env.git'
             }
         }
 
@@ -33,8 +33,8 @@ pipeline {
                     def secret = sh(
                         script: """
                         aws secretsmanager get-secret-value \
-                        --secret-id ${SECRET_NAME} \
-                        --region ${AWS_DEFAULT_REGION} \
+                        --secret-id ${env.SECRET_NAME} \
+                        --region ${env.AWS_DEFAULT_REGION} \
                         --query SecretString \
                         --output text
                         """,
@@ -50,16 +50,18 @@ pipeline {
 
         stage('Terraform Init & Workspace Setup') {
             steps {
-                sh '''
+                // IMPORTANT: Double quotes (""") are used here so Jenkins injects the parameter!
+                sh """
                 terraform init -no-color
-                terraform workspace select ${ENV} || terraform workspace new ${ENV}
-                '''
+                terraform workspace select ${params.ENV} || terraform workspace new ${params.ENV}
+                """
             }
         }
 
         stage('Terraform Plan') {
             steps {
-                sh 'terraform plan -var-file="${ENV}.tfvars" -no-color'
+                // IMPORTANT: Double quotes (") are used here!
+                sh "terraform plan -var-file=${params.ENV}.tfvars -no-color"
             }
         }
 
@@ -67,10 +69,10 @@ pipeline {
             steps {
                 script {
                     if (params.ACTION == 'apply') {
-                        sh 'terraform apply -auto-approve -var-file="${ENV}.tfvars" -no-color'
+                        sh "terraform apply -auto-approve -var-file=${params.ENV}.tfvars -no-color"
                     } else if (params.ACTION == 'destroy') {
                         input message: "⚠️ DANGER: Confirm DESTROY for ${params.ENV}?"
-                        sh 'terraform destroy -auto-approve -var-file="${ENV}.tfvars" -no-color'
+                        sh "terraform destroy -auto-approve -var-file=${params.ENV}.tfvars -no-color"
                     }
                 }
             }
