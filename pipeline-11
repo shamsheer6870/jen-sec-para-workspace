@@ -1,0 +1,112 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ENV', choices: ['dev', 'test', 'prod'], description: 'Select Environment')
+        choice(name: 'ACTION', choices: ['apply', 'destroy'], description: 'Terraform Action')
+    }
+
+    environment {
+        AWS_DEFAULT_REGION = 'ap-south-1'
+        SECRET_NAME = 'jenkins-demo-secret-manager'
+        TF_IN_AUTOMATION = 'true'
+    }
+
+    stages {
+
+        stage('Clean Workspace') {
+            steps {
+                deleteDir()
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                echo "Cloning repository..."
+                git branch: 'main', url: 'https://github.com/shamsheer6870/jenkins-secrect-mana-multi-env.git'
+            }
+        }
+
+        // 🔍 DEBUG STAGE (VERY IMPORTANT)
+        stage('Debug Files') {
+            steps {
+                sh '''
+                echo "Current Directory:"
+                pwd
+                echo "Files in Workspace:"
+                ls -l
+                '''
+            }
+        }
+
+        stage('Fetch AWS Credentials') {
+            steps {
+                script {
+                    echo "Fetching AWS credentials..."
+                    def secret = sh(
+                        script: """
+                        aws secretsmanager get-secret-value \
+                        --secret-id ${env.SECRET_NAME} \
+                        --region ${env.AWS_DEFAULT_REGION} \
+                        --query SecretString \
+                        --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def json = readJSON text: secret
+                    env.AWS_ACCESS_KEY_ID = json.access_key
+                    env.AWS_SECRET_ACCESS_KEY = json.secret_key
+                }
+            }
+        }
+
+        stage('Terraform Init & Workspace') {
+            steps {
+                sh """
+                terraform init -no-color
+                terraform workspace select ${params.ENV} || terraform workspace new ${params.ENV}
+                """
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                script {
+                    def tfvarsFile = "${params.ENV}.tfvars"
+
+                    if (fileExists(tfvarsFile)) {
+                        echo "Using tfvars file: ${tfvarsFile}"
+                        sh "terraform plan -var-file=${tfvarsFile} -no-color"
+                    } else {
+                        error "❌ ERROR: ${tfvarsFile} not found in workspace"
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Execution') {
+            steps {
+                script {
+                    def tfvarsFile = "${params.ENV}.tfvars"
+
+                    if (params.ACTION == 'apply') {
+                        sh "terraform apply -auto-approve -var-file=${tfvarsFile} -no-color"
+                    } else if (params.ACTION == 'destroy') {
+                        input message: "⚠️ Confirm DESTROY for ${params.ENV}?"
+                        sh "terraform destroy -auto-approve -var-file=${tfvarsFile} -no-color"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Pipeline executed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed! Check logs above."
+        }
+    }
+}
