@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ENV', choices: ['dev', 'test', 'prod'], description: 'Select Environment')
+        choice(name: 'ACTION', choices: ['apply', 'destroy'], description: 'Terraform Action')
+    }
+
+    environment {
+        // Change this if you ever want to deploy to a different region
+        AWS_DEFAULT_REGION = 'ap-south-1' 
+        SECRET_NAME = 'jenkins-demo-secret-manager'
+        TF_IN_AUTOMATION = 'true'
+    }
+
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                // Wipes the folder clean so old files don't cause conflicts
+                deleteDir()
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                echo "Checking out code directly from SCM..."
+                // Automatically pulls the correct GitHub branch
+                checkout scm
+                
+                // Prints the downloaded files to the logs so you can verify .tfvars are present
+                sh 'ls -la'
+            }
+        }
+
+        stage('Fetch AWS Credentials') {
+            steps {
+                script {
+                    echo "Fetching AWS credentials directly from AWS Secrets Manager..."
+                    def secret = sh(
+                        script: """
+                        aws secretsmanager get-secret-value \
+                        --secret-id ${env.SECRET_NAME} \
+                        --region ${env.AWS_DEFAULT_REGION} \
+                        --query SecretString \
+                        --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    // Parses the JSON from the vault and loads it into secure memory
+                    def json = readJSON text: secret
+                    env.AWS_ACCESS_KEY_ID = json.access_key
+                    env.AWS_SECRET_ACCESS_KEY = json.secret_key
+                    
+                    // Sanity Check: Proves to you in the logs that it grabbed the REAL keys
+                    echo "SUCCESS: Found Access Key starting with: ${env.AWS_ACCESS_KEY_ID.take(4)}"
+                }
+            }
+        }
+
+        stage('Terraform Init & Workspace Setup') {
+            steps {
+                // Double quotes (""") ensure Jenkins injects ${params.ENV} correctly
+                sh """
+                terraform init -no-color
+                terraform workspace select ${params.ENV} || terraform workspace new ${params.ENV}
+                """
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                sh "terraform plan -var-file=${params.ENV}.tfvars -no-color"
+            }
+        }
+
+        stage('Terraform Execution') {
+            steps {
+                script {
+                    if (params.ACTION == 'apply') {
+                        sh "terraform apply -auto-approve -var-file=${params.ENV}.tfvars -no-color"
+                    } else if (params.ACTION == 'destroy') {
+                        // Safety pause! Requires a human to click "Proceed" in the Jenkins UI
+                        input message: "⚠️ DANGER: Confirm DESTROY for ${params.ENV}?"
+                        sh "terraform destroy -auto-approve -var-file=${params.ENV}.tfvars -no-color"
+                    }
+                }
+            }
+        }
+    }
+}
